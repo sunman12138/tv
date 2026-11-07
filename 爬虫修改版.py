@@ -15,7 +15,6 @@ from pyquery import PyQuery as pq
 sys.path.append('..')
 from base.spider import Spider
 
-
 class Spider(Spider):
     def init(self, extend=""):
         pass
@@ -36,15 +35,12 @@ class Spider(Spider):
     dm = 'dm247'
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.thisav66.com/dm247/cn/',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Referer': f'{host}/{dm}/cn/',
     }
 
     def _base(self):
         return f'{self.host}/{self.dm}/cn'
 
-    # ==================== 首页 ====================
     def homeContent(self, filter):
         classes = [
             {"type_name": "最近更新", "type_id": "new"},
@@ -64,62 +60,34 @@ class Spider(Spider):
     def homeVideoContent(self):
         return self.categoryContent("new", 1, False, {})
 
-    # ==================== 列表解析 ====================
     def _parse_cards(self, doc):
         videos = []
-        seen = set()
-
-        # 优先精确选择器，兜底 div.group
-        cards = doc('div.thumbnail.group')
-        if not cards:
-            cards = doc('div.group')
-
-        for item in cards.items():
+        for item in doc('div.group').items():
             a = item('a[href]').eq(0)
-            href = (a.attr('href') or '').strip()
+            href = a.attr('href') or ''
             if not href or '/search/' in href:
                 continue
 
             vid = href.rstrip('/').split('/')[-1]
-            if not vid or len(vid) < 2:
+            if not vid or len(vid) < 3:
                 continue
 
-            # 标题：卡片底部 div.my-2 a → 链接文本 → img alt → 番号
-            name = item('div.my-2 a').text().strip()
+            name = a.text().strip()
             if not name:
-                name = a.text().strip()
-            if not name:
-                name = (item('img').attr('alt') or item('img').attr('title') or '').strip()
-            if not name:
-                name = vid
+                name = item('img').attr('alt') or item('img').attr('title') or vid
 
-            # 封面：img[data-src] 已是绝对地址，过滤 base64 占位
-            pic = item('img[data-src]').attr('data-src') or ''
-            if not pic:
-                src = item('img').attr('src') or ''
-                if src and not src.startswith('data:'):
-                    pic = src
+            pic = item('img').attr('data-src') or item('img').attr('src') or ''
             if pic.startswith('//'):
                 pic = 'https:' + pic
             elif pic.startswith('/'):
                 pic = self.host + pic
 
-            # 角标：中英文字幕 / 无码 / 时长
             remarks = ''
             for span in item('span').items():
                 txt = span.text().strip()
-                if not txt:
-                    continue
-                if any(k in txt for k in ['中文字幕', '英文字幕', '无码', 'HD', 'VR']):
+                if txt and any(k in txt for k in ['中文字幕', '无码', 'HD', ':', '分钟']):
                     remarks = txt
                     break
-                if re.fullmatch(r'\d{1,2}:\d{2}(:\d{2})?', txt):
-                    remarks = txt
-                    break
-
-            if vid in seen:
-                continue
-            seen.add(vid)
 
             videos.append({
                 "vod_id": vid,
@@ -128,21 +96,23 @@ class Spider(Spider):
                 "vod_remarks": remarks,
                 "style": {"type": "rect", "ratio": 1.78}
             })
-        return videos
 
-    # ==================== 分类列表 ====================
+        seen = set()
+        unique = []
+        for v in videos:
+            if v['vod_id'] not in seen:
+                seen.add(v['vod_id'])
+                unique.append(v)
+        return unique
+
     def categoryContent(self, tid, pg, filter, extend):
         url = f"{self._base()}/{tid}?page={pg}"
-        videos = []
         try:
             res = self.fetch(url, headers=self.headers)
-            text = res.text or ''
-            if self._is_cf_challenge(text):
-                print(f"[nJAV] CF challenge: {url}")
-                return {'list': [], 'page': pg, 'pagecount': 1, 'limit': 0, 'total': 0}
-            videos = self._parse_cards(pq(text))
-        except Exception as e:
-            print(f"[nJAV] category error: {e}")
+            doc = pq(res.text)
+            videos = self._parse_cards(doc)
+        except Exception:
+            videos = []
 
         return {
             'list': videos,
@@ -152,9 +122,8 @@ class Spider(Spider):
             'total': 999
         }
 
-    # ==================== 详情 ====================
     def detailContent(self, ids):
-        vid = ids[0] if isinstance(ids, (list, tuple)) else str(ids)
+        vid = ids[0]
         url = f"{self._base()}/{vid}"
         try:
             res = self.fetch(url, headers=self.headers)
@@ -166,9 +135,7 @@ class Spider(Spider):
         if not name:
             name = doc('meta[property="og:title"]').attr('content') or vid
 
-        pic = doc('meta[property="og:image"]').attr('content') or ''
-        if not pic:
-            pic = doc('video').attr('poster') or ''
+        pic = doc('meta[property="og:image"]').attr('content') or doc('video').attr('poster') or ''
         if pic.startswith('//'):
             pic = 'https:' + pic
         elif pic.startswith('/'):
@@ -182,6 +149,12 @@ class Spider(Spider):
             "vod_id": vid,
             "vod_name": name,
             "vod_pic": pic,
+            "type_name": "",
+            "vod_year": "",
+            "vod_area": "",
+            "vod_remarks": "",
+            "vod_actor": "",
+            "vod_director": "",
             "vod_content": content,
             "vod_play_from": "nJAV",
             "vod_play_url": f"播放${vid}"
@@ -194,18 +167,17 @@ class Spider(Spider):
             "vod_play_from": "nJAV", "vod_play_url": f"播放${vid}"
         }
 
-    # ==================== 搜索 ====================
     def searchContent(self, key, quick, pg="1"):
-        keyword = quote(key.strip(), safe='')
+        keyword = quote(key.strip())
         url = f"{self._base()}/search/{keyword}?page={pg}"
         try:
             res = self.fetch(url, headers=self.headers)
-            videos = self._parse_cards(pq(res.text))
+            doc = pq(res.text)
+            videos = self._parse_cards(doc)
         except Exception:
             videos = []
-        return {"list": videos, "page": int(pg) if str(pg).isdigit() else 1}
+        return {"list": videos, "page": int(pg)}
 
-    # ==================== 播放 ====================
     def playerContent(self, flag, id, vipFlags):
         url = f"{self._base()}/{id}"
         try:
@@ -213,19 +185,28 @@ class Spider(Spider):
         except Exception:
             return {"parse": 1, "url": url, "header": self.headers}
 
-        text = (res.text or '').replace('\\/', '/').replace('\\u002F', '/')
+        text = res.text.replace('\\/', '/')   # 兼容 JS 转义斜杠
 
-        m = re.search(r'<source[^>]+src=["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', text, re.I)
-        if m:
-            return self._play(m.group(1))
+        source_match = re.search(
+            r'<source[^>]+src=["\'](https?://[^"\']+\.m3u8[^"\']*)["\']',
+            text, re.I
+        )
+        if source_match:
+            return self._play(source_match.group(1))
 
-        m = re.search(r'(https?://[^\s"\'<>\\]+\.m3u8(?:\?[^\s"\'<>\\]*)?)', text)
-        if m:
-            return self._play(m.group(1))
+        m3u8_match = re.search(
+            r'(https?://[^\s"\'<>\\]+\.m3u8(?:\?[^\s"\'<>\\]*)?)',
+            text
+        )
+        if m3u8_match:
+            return self._play(m3u8_match.group(1))
 
-        m = re.search(r'(?:videoUrl|playUrl|m3u8|source|src)\s*[:=]\s*["\']([^"\']+\.m3u8[^"\']*)["\']', text, re.I)
-        if m:
-            return self._play(m.group(1))
+        js_match = re.search(
+            r'(?:videoUrl|playUrl|m3u8|source)\s*[:=]\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+            text, re.I
+        )
+        if js_match:
+            return self._play(js_match.group(1))
 
         return {"parse": 1, "url": url, "header": self.headers}
 
@@ -236,11 +217,3 @@ class Spider(Spider):
             "url": m3u8_url,
             "header": self.headers
         }
-
-    # ==================== 工具 ====================
-    def _is_cf_challenge(self, text):
-        if not text:
-            return False
-        keys = ('Just a moment', '__cf_chl_opt', 'cf-browser-verification',
-                'challenge-platform', 'Checking your browser')
-        return any(k in text for k in keys)
