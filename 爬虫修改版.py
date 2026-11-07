@@ -94,7 +94,7 @@ class Spider(Spider):
                 "vod_name": name,
                 "vod_pic": pic,
                 "vod_remarks": remarks,
-                "style": {"type": "rect", "ratio": 1.78}
+                "style": {"type": "rect", "ratio": 1.33}
             })
 
         seen = set()
