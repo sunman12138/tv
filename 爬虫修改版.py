@@ -30,60 +30,70 @@ class Spider(Spider):
         return False
 
     def localProxy(self, param):
-        return [200, "video/MP2T", b""]
+        return [200, "video/MP2T", "", ""]
 
     host = 'https://www.thisav66.com'
+    dm = 'dm247'
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.thisav66.com/cn/',
+        'Referer': 'https://www.thisav66.com/dm247/cn/',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     }
 
+    def _base(self):
+        return f'{self.host}/{self.dm}/cn'
+
     # ==================== 首页 ====================
-    # type_id 使用完整相对路径（不含域名）
-    # 官方导航显示以下路径无 dm 前缀即可访问；若实测 404，可改为 dmNNN/cn/xxx
     def homeContent(self, filter):
         classes = [
-            {"type_name": "最近更新", "type_id": "cn/new"},
-            {"type_name": "新作上市", "type_id": "cn/release"},
-            {"type_name": "中文字幕", "type_id": "cn/chinese-subtitle"},
-            {"type_name": "无码流出", "type_id": "cn/uncensored-leak"},
-            {"type_name": "VR", "type_id": "cn/genres/VR"},
-            {"type_name": "女优一览", "type_id": "cn/actresses"},
-            {"type_name": "类型", "type_id": "cn/genres"},
-            {"type_name": "发行商", "type_id": "cn/makers"},
+            {"type_name": "最近更新", "type_id": "new"},
+            {"type_name": "新作上市", "type_id": "release"},
+            {"type_name": "中文字幕", "type_id": "chinese-subtitle"},
+            {"type_name": "无码流出", "type_id": "uncensored-leak"},
+            {"type_name": "VR", "type_id": "genres/VR"},
+            {"type_name": "今日热门", "type_id": "today-hot"},
+            {"type_name": "本周热门", "type_id": "weekly-hot"},
+            {"type_name": "本月热门", "type_id": "monthly-hot"},
+            {"type_name": "素人", "type_id": "amateur"},
+            {"type_name": "亚洲AV", "type_id": "asia"},
+            {"type_name": "麻豆传媒", "type_id": "madou"},
         ]
         return {'class': classes}
 
     def homeVideoContent(self):
-        return self.categoryContent("cn/new", 1, False, {})
+        return self.categoryContent("new", 1, False, {})
 
     # ==================== 列表解析 ====================
     def _parse_cards(self, doc):
-        """按 div.thumbnail.group 精确解析视频卡片"""
         videos = []
         seen = set()
 
-        for item in doc('div.thumbnail.group').items():
+        # 优先精确选择器，兜底 div.group
+        cards = doc('div.thumbnail.group')
+        if not cards:
+            cards = doc('div.group')
+
+        for item in cards.items():
             a = item('a[href]').eq(0)
             href = (a.attr('href') or '').strip()
-            if not href:
+            if not href or '/search/' in href:
                 continue
 
-            # 番号始终是 URL 最后一段
             vid = href.rstrip('/').split('/')[-1]
             if not vid or len(vid) < 2:
                 continue
 
-            # 标题：卡片底部 div.my-2 a
+            # 标题：卡片底部 div.my-2 a → 链接文本 → img alt → 番号
             name = item('div.my-2 a').text().strip()
             if not name:
-                name = (item('img').attr('alt') or '').strip()
+                name = a.text().strip()
+            if not name:
+                name = (item('img').attr('alt') or item('img').attr('title') or '').strip()
             if not name:
                 name = vid
 
-            # 封面：img[data-src] 已为绝对地址
+            # 封面：img[data-src] 已是绝对地址，过滤 base64 占位
             pic = item('img[data-src]').attr('data-src') or ''
             if not pic:
                 src = item('img').attr('src') or ''
@@ -94,12 +104,17 @@ class Spider(Spider):
             elif pic.startswith('/'):
                 pic = self.host + pic
 
-            # 角标：第一个非空的 span.absolute.bottom-1
+            # 角标：中英文字幕 / 无码 / 时长
             remarks = ''
-            for span in item('span.absolute.bottom-1').items():
-                t = span.text().strip()
-                if t:
-                    remarks = t
+            for span in item('span').items():
+                txt = span.text().strip()
+                if not txt:
+                    continue
+                if any(k in txt for k in ['中文字幕', '英文字幕', '无码', 'HD', 'VR']):
+                    remarks = txt
+                    break
+                if re.fullmatch(r'\d{1,2}:\d{2}(:\d{2})?', txt):
+                    remarks = txt
                     break
 
             if vid in seen:
@@ -116,25 +131,18 @@ class Spider(Spider):
         return videos
 
     # ==================== 分类列表 ====================
-    def _full_url(self, tid, pg=1):
-        tid = tid.strip('/')
-        base = f"{self.host}/{tid}"
-        if pg and str(pg) != "1":
-            return f"{base}?page={pg}"
-        return base
-
     def categoryContent(self, tid, pg, filter, extend):
-        url = self._full_url(tid, pg)
+        url = f"{self._base()}/{tid}?page={pg}"
         videos = []
         try:
             res = self.fetch(url, headers=self.headers)
             text = res.text or ''
-            if self._is_cloudflare_challenge(text):
-                print(f"[nJAV] Cloudflare challenge on {url}")
+            if self._is_cf_challenge(text):
+                print(f"[nJAV] CF challenge: {url}")
                 return {'list': [], 'page': pg, 'pagecount': 1, 'limit': 0, 'total': 0}
             videos = self._parse_cards(pq(text))
         except Exception as e:
-            print(f"[nJAV] categoryContent error: {e}")
+            print(f"[nJAV] category error: {e}")
 
         return {
             'list': videos,
@@ -147,7 +155,7 @@ class Spider(Spider):
     # ==================== 详情 ====================
     def detailContent(self, ids):
         vid = ids[0] if isinstance(ids, (list, tuple)) else str(ids)
-        url = f"{self.host}/cn/{vid}"
+        url = f"{self._base()}/{vid}"
         try:
             res = self.fetch(url, headers=self.headers)
             doc = pq(res.text)
@@ -189,9 +197,7 @@ class Spider(Spider):
     # ==================== 搜索 ====================
     def searchContent(self, key, quick, pg="1"):
         keyword = quote(key.strip(), safe='')
-        url = f"{self.host}/cn/search/{keyword}"
-        if pg and str(pg) != "1":
-            url += f"?page={pg}"
+        url = f"{self._base()}/search/{keyword}?page={pg}"
         try:
             res = self.fetch(url, headers=self.headers)
             videos = self._parse_cards(pq(res.text))
@@ -201,7 +207,7 @@ class Spider(Spider):
 
     # ==================== 播放 ====================
     def playerContent(self, flag, id, vipFlags):
-        url = f"{self.host}/cn/{id}"
+        url = f"{self._base()}/{id}"
         try:
             res = self.fetch(url, headers=self.headers)
         except Exception:
@@ -209,22 +215,18 @@ class Spider(Spider):
 
         text = (res.text or '').replace('\\/', '/').replace('\\u002F', '/')
 
-        # 策略 1：<source src="...m3u8...">
         m = re.search(r'<source[^>]+src=["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', text, re.I)
         if m:
             return self._play(m.group(1))
 
-        # 策略 2：通用 m3u8
         m = re.search(r'(https?://[^\s"\'<>\\]+\.m3u8(?:\?[^\s"\'<>\\]*)?)', text)
         if m:
             return self._play(m.group(1))
 
-        # 策略 3：JS 变量
         m = re.search(r'(?:videoUrl|playUrl|m3u8|source|src)\s*[:=]\s*["\']([^"\']+\.m3u8[^"\']*)["\']', text, re.I)
         if m:
             return self._play(m.group(1))
 
-        # 兜底：交给框架嗅探
         return {"parse": 1, "url": url, "header": self.headers}
 
     def _play(self, m3u8_url):
@@ -236,7 +238,7 @@ class Spider(Spider):
         }
 
     # ==================== 工具 ====================
-    def _is_cloudflare_challenge(self, text):
+    def _is_cf_challenge(self, text):
         if not text:
             return False
         keys = ('Just a moment', '__cf_chl_opt', 'cf-browser-verification',
