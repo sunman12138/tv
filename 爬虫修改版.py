@@ -1,4 +1,4 @@
-﻿"""
+"""
 @header({
   searchable: 1,
   filterable: 0,
@@ -61,22 +61,19 @@ class Spider(Spider):
         return self.categoryContent("new", 1, False, {})
 
     def _parse_cards(self, doc):
-        """通用卡片解析——适配新站点的 Tailwind 网格结构"""
         videos = []
-        # 新站点卡片容器：div.group 内包含链接和图片
         for item in doc('div.group').items():
             a = item('a[href]').eq(0)
             href = a.attr('href') or ''
             if not href or '/search/' in href:
                 continue
-            # 提取作品番号作为 vod_id（URL 最后一段）
+
             vid = href.rstrip('/').split('/')[-1]
             if not vid or len(vid) < 3:
                 continue
 
             name = a.text().strip()
             if not name:
-                # 回退：从图片 alt 或标题属性取
                 name = item('img').attr('alt') or item('img').attr('title') or vid
 
             pic = item('img').attr('data-src') or item('img').attr('src') or ''
@@ -85,7 +82,6 @@ class Spider(Spider):
             elif pic.startswith('/'):
                 pic = self.host + pic
 
-            # 角标（中文字幕 / 无码 / 时长等）
             remarks = ''
             for span in item('span').items():
                 txt = span.text().strip()
@@ -97,9 +93,10 @@ class Spider(Spider):
                 "vod_id": vid,
                 "vod_name": name,
                 "vod_pic": pic,
-                "vod_remarks": remarks
+                "vod_remarks": remarks,
+                "style": {"type": "rect", "ratio": 1.78}
             })
-        # 去重
+
         seen = set()
         unique = []
         for v in videos:
@@ -134,17 +131,16 @@ class Spider(Spider):
         except Exception:
             return {'list': [self._empty_vod(vid)]}
 
-        # 标题：优先 h1，回退 og:title
         name = doc('h1').text().strip()
         if not name:
             name = doc('meta[property="og:title"]').attr('content') or vid
 
-        # 海报：og:image 或 video[poster]
         pic = doc('meta[property="og:image"]').attr('content') or doc('video').attr('poster') or ''
         if pic.startswith('//'):
             pic = 'https:' + pic
+        elif pic.startswith('/'):
+            pic = self.host + pic
 
-        # 简介：描述区域
         content = doc('meta[name="description"]').attr('content') or ''
         if not content:
             content = doc('div.prose, div.description, div.mt-4').text().strip()
@@ -189,9 +185,8 @@ class Spider(Spider):
         except Exception:
             return {"parse": 1, "url": url, "header": self.headers}
 
-        text = res.text
+        text = res.text.replace('\\/', '/')   # 兼容 JS 转义斜杠
 
-        # 策略 1：优先匹配 <source src="...m3u8..."> 或 video 标签
         source_match = re.search(
             r'<source[^>]+src=["\'](https?://[^"\']+\.m3u8[^"\']*)["\']',
             text, re.I
@@ -199,7 +194,6 @@ class Spider(Spider):
         if source_match:
             return self._play(source_match.group(1))
 
-        # 策略 2：通用 m3u8 正则（排除转义形式，兼容明文）
         m3u8_match = re.search(
             r'(https?://[^\s"\'<>\\]+\.m3u8(?:\?[^\s"\'<>\\]*)?)',
             text
@@ -207,7 +201,6 @@ class Spider(Spider):
         if m3u8_match:
             return self._play(m3u8_match.group(1))
 
-        # 策略 3：从 JS 变量中提取（新站点可能将地址放在 script 里）
         js_match = re.search(
             r'(?:videoUrl|playUrl|m3u8|source)\s*[:=]\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
             text, re.I
@@ -215,7 +208,6 @@ class Spider(Spider):
         if js_match:
             return self._play(js_match.group(1))
 
-        # 兜底：交给框架嗅探
         return {"parse": 1, "url": url, "header": self.headers}
 
     def _play(self, m3u8_url):
@@ -224,4 +216,4 @@ class Spider(Spider):
             "playUrl": "",
             "url": m3u8_url,
             "header": self.headers
-        }
+          }
